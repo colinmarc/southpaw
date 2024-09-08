@@ -118,7 +118,7 @@ impl DeviceClient {
 
         let ts = rustix::time::clock_gettime(self.clock_id);
 
-        let ev_size = std::mem::size_of::<InputEvent>();
+        let ev_size = size_of::<InputEvent>();
         let n = (size / ev_size).min(ev_iter.len());
 
         // let mut out = vec![0_u8; ev_size * n];
@@ -344,7 +344,7 @@ impl fuse::Filesystem for DeviceFs {
         match cmd {
             Cmd::GetVersion => reply.ioctl(0, &EV_VERSION.to_ne_bytes()),
             Cmd::GetId => {
-                let mut out = vec![0_u8; std::mem::size_of::<input_id>()];
+                let mut out = vec![0_u8; size_of::<input_id>()];
                 unsafe {
                     std::ptr::write(out.as_mut_ptr() as *mut _, self.dev_attr.id);
                 }
@@ -441,9 +441,8 @@ impl fuse::Filesystem for DeviceFs {
 
 fn reply_bits<B: bit_vec::BitBlock>(reply: fuse::ReplyIoctl, len: usize, bits: &BitVec<B>) {
     let storage = bits.storage();
-    let out: &[u8] = unsafe {
-        std::slice::from_raw_parts(storage.as_ptr() as _, std::mem::size_of_val(storage))
-    };
+    let out: &[u8] =
+        unsafe { std::slice::from_raw_parts(storage.as_ptr() as _, size_of_val(storage)) };
 
     let len = len.min(out.len());
     reply.ioctl(len as i32, &out[..len])

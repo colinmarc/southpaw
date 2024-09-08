@@ -112,14 +112,14 @@ impl Cmd {
                 SetKeyCode(input_keymap_entry {
                     index: 0,
                     flags: 0,
-                    len: std::mem::size_of::<c_uint>() as u8,
+                    len: size_of::<c_uint>() as u8,
                     keycode: y,
                     scancode,
                 })
             }
             EVIOCSKEYCODE_V2 => todo!(),
             EVIOCGMTSLOTS => GetMtSlots {
-                num_slots: (out_len / std::mem::size_of::<i32>()) as c_uint - 1,
+                num_slots: (out_len / size_of::<i32>()) as c_uint - 1,
             },
             x if opcode_in_range(&EVIOCGBIT, x) => {
                 GetEventBits(opcode_offset(&EVIOCGBIT, opcode) as u16, out_len)
@@ -262,7 +262,7 @@ fn opcode_offset(range: &[Opcode], op: Opcode) -> usize {
 }
 
 fn read_args<T: Sized>(buf: &[u8]) -> Result<T, Errno> {
-    if buf.len() != std::mem::size_of::<T>() {
+    if buf.len() != size_of::<T>() {
         return Err(Errno::INVAL);
     }
 
