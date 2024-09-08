@@ -17,6 +17,7 @@
 )]
 
 use std::{
+    ffi::CString,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -142,7 +143,7 @@ impl Default for DeviceBuilder {
 impl DeviceBuilder {
     /// Sets the name of the device. The name must not contain null bytes.
     pub fn name(mut self, name: impl AsRef<str>) -> Self {
-        self.dev_attr.name = std::ffi::CString::new(name.as_ref()).expect("invalid name");
+        self.dev_attr.name = Some(CString::new(name.as_ref()).expect("invalid name"));
         self
     }
 
@@ -161,6 +162,19 @@ impl DeviceBuilder {
             product,
             version,
         };
+        self
+    }
+
+    /// Sets the physical address of the device. The name must not contain null
+    /// bytes.
+    pub fn physical_address(mut self, addr: impl AsRef<str>) -> Self {
+        self.dev_attr.phys = Some(CString::new(addr.as_ref()).expect("invalid addr"));
+        self
+    }
+
+    /// Sets the "unique ID" of the device. The id must not contain null bytes.
+    pub fn unique_id(mut self, uniq: impl AsRef<str>) -> Self {
+        self.dev_attr.uniq = Some(CString::new(uniq.as_ref()).expect("invalid addr"));
         self
     }
 
@@ -232,11 +246,15 @@ impl DeviceBuilder {
         let session = fuser::spawn_mount2(fs, &path, &self.mount_options)?;
         let notifier = session.notifier();
 
+        let name = self
+            .dev_attr
+            .name
+            .map_or(String::new(), |s| s.to_str().unwrap().to_owned());
         Ok(Device {
             _session: session,
             notifier,
             state,
-            name: self.dev_attr.name.to_str().unwrap().to_owned(),
+            name,
             path,
         })
     }

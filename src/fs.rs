@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::ops::DerefMut as _;
 use std::sync::{Arc, Mutex};
 use std::time;
@@ -37,7 +37,9 @@ pub(crate) struct DeviceSupport {
 
 #[derive(Clone)]
 pub(crate) struct DeviceAttr {
-    pub(crate) name: CString,
+    pub(crate) name: Option<CString>,
+    pub(crate) phys: Option<CString>,
+    pub(crate) uniq: Option<CString>,
     pub(crate) id: input_id,
     pub(crate) prop_bits: BitVec,
     pub(crate) support: DeviceSupport,
@@ -46,7 +48,9 @@ pub(crate) struct DeviceAttr {
 impl Default for DeviceAttr {
     fn default() -> Self {
         let mut attr = DeviceAttr {
-            name: c"".to_owned(),
+            name: None,
+            phys: None,
+            uniq: None,
             id: input_id {
                 bustype: 0,
                 vendor: 0,
@@ -351,15 +355,9 @@ impl fuse::Filesystem for DeviceFs {
 
                 reply.ioctl(0, &out);
             }
-            Cmd::GetName(len) => {
-                let name = self.dev_attr.name.as_bytes_with_nul();
-                debug!("name: {name:?}");
-                if len < name.len() {
-                    reply.ioctl(len as i32, &name[..len])
-                } else {
-                    reply.ioctl(name.len() as i32, name)
-                }
-            }
+            Cmd::GetName(len) => reply_str(reply, len, self.dev_attr.name.as_deref()),
+            Cmd::GetPhys(len) => reply_str(reply, len, self.dev_attr.phys.as_deref()),
+            Cmd::GetUniq(len) => reply_str(reply, len, self.dev_attr.uniq.as_deref()),
             Cmd::GetProps(len) => reply_bits(reply, len, &self.dev_attr.prop_bits),
             Cmd::GetEventBits(ty, len) => match ty {
                 0 => reply_bits(reply, len, &self.dev_attr.support.ev_bits),
@@ -437,6 +435,12 @@ impl fuse::Filesystem for DeviceFs {
     fn destroy(&mut self) {
         self.state.lock().unwrap().defunct = true
     }
+}
+
+fn reply_str(reply: fuse::ReplyIoctl, len: usize, str: Option<&CStr>) {
+    let out: &[u8] = str.map_or(&[], |s| s.to_bytes_with_nul());
+    let len = len.min(out.len());
+    reply.ioctl(len as i32, &out[..len])
 }
 
 fn reply_bits<B: bit_vec::BitBlock>(reply: fuse::ReplyIoctl, len: usize, bits: &BitVec<B>) {

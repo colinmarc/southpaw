@@ -30,8 +30,8 @@ The following ioctls are currently implemented:
 | EVIOCSKEYCODE    |   ❌    |
 | EVIOCSKEYCODE_V2 |   ❌    |
 | EVIOCGNAME       |   ✅    |
-| EVIOCGPHYS       |   ❌    |
-| EVIOCGUNIQ       |   ❌    |
+| EVIOCGPHYS       |   ✅    |
+| EVIOCGUNIQ       |   ✅    |
 | EVIOCGPROP       |   ✅    |
 | EVIOCGMTSLOTS    |   ❌    |
 | EVIOCGKEY        |   ❌    |
