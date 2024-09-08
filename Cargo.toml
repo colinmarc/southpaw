@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies.fuser]
 version = "0.14"
+default_features = false
 features = ["abi-7-11"]
 
 [dependencies.rustix]
