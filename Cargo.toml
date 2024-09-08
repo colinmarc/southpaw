@@ -1,0 +1,31 @@
+[package]
+name = "southpaw"
+description = "Allows userspace emulation of evdev character devices."
+edition = "2021"
+version = "0.1.0"
+authors = ["Colin Marc <hi@colinmarc.com>"]
+license = "MIT"
+
+[dependencies.fuser]
+version = "0.14"
+features = ["abi-7-11"]
+
+[dependencies.rustix]
+version = "0.38"
+features = ["process", "time"]
+
+[dependencies]
+bit-vec = "0.8"
+libc = "0.2"
+log = "0.4"
+num_enum = "0.7"
+seq-macro = "0.3.5"
+uapi = "0.2"
+
+[dev-dependencies]
+env_logger = "0.11"
+evdev = "0.12"
+tempfile = "3"
+
+[build-dependencies]
+bindgen = "0.70"
