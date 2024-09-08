@@ -29,3 +29,5 @@ tempfile = "3"
 
 [build-dependencies]
 bindgen = "0.70"
+rustix = { version = "0.38", features = ["system"] }
+semver = "1"

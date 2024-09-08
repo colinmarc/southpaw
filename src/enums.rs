@@ -507,8 +507,11 @@ pub enum KeyCode {
     Key10channelsup = KEY_10CHANNELSUP,
     Key10channelsdown = KEY_10CHANNELSDOWN,
     KeyImages = KEY_IMAGES,
+    #[cfg(linux510)]
     KeyNotificationCenter = KEY_NOTIFICATION_CENTER,
+    #[cfg(linux510)]
     KeyPickupPhone = KEY_PICKUP_PHONE,
+    #[cfg(linux510)]
     KeyHangupPhone = KEY_HANGUP_PHONE,
     KeyDelEol = KEY_DEL_EOL,
     KeyDelEos = KEY_DEL_EOS,
@@ -535,6 +538,7 @@ pub enum KeyCode {
     KeyFnF = KEY_FN_F,
     KeyFnS = KEY_FN_S,
     KeyFnB = KEY_FN_B,
+    #[cfg(linux510)]
     KeyFnRightShift = KEY_FN_RIGHT_SHIFT,
     KeyBrlDot1 = KEY_BRL_DOT1,
     KeyBrlDot2 = KEY_BRL_DOT2,
@@ -583,7 +587,6 @@ pub enum KeyCode {
     BtnDpadRight = BTN_DPAD_RIGHT,
     KeyAlsToggle = KEY_ALS_TOGGLE,
     KeyRotateLockToggle = KEY_ROTATE_LOCK_TOGGLE,
-    KeyRefreshRateToggle = KEY_REFRESH_RATE_TOGGLE,
     KeyButtonconfig = KEY_BUTTONCONFIG,
     KeyTaskmanager = KEY_TASKMANAGER,
     KeyJournal = KEY_JOURNAL,
@@ -593,13 +596,16 @@ pub enum KeyCode {
     KeyVoicecommand = KEY_VOICECOMMAND,
     KeyAssistant = KEY_ASSISTANT,
     KeyKbdLayoutNext = KEY_KBD_LAYOUT_NEXT,
+    #[cfg(linux515)]
     KeyEmojiPicker = KEY_EMOJI_PICKER,
+    #[cfg(linux61)]
     KeyDictate = KEY_DICTATE,
+    #[cfg(linux66)]
     KeyCameraAccessEnable = KEY_CAMERA_ACCESS_ENABLE,
+    #[cfg(linux66)]
     KeyCameraAccessDisable = KEY_CAMERA_ACCESS_DISABLE,
+    #[cfg(linux66)]
     KeyCameraAccessToggle = KEY_CAMERA_ACCESS_TOGGLE,
-    KeyAccessibility = KEY_ACCESSIBILITY,
-    KeyDoNotDisturb = KEY_DO_NOT_DISTURB,
     KeyBrightnessMin = KEY_BRIGHTNESS_MIN,
     KeyBrightnessMax = KEY_BRIGHTNESS_MAX,
     KeyKbdinputassistPrev = KEY_KBDINPUTASSIST_PREV,
@@ -627,63 +633,121 @@ pub enum KeyCode {
     KeySlowreverse = KEY_SLOWREVERSE,
     KeyData = KEY_DATA,
     KeyOnscreenKeyboard = KEY_ONSCREEN_KEYBOARD,
+    #[cfg(linux510)]
     KeyPrivacyScreenToggle = KEY_PRIVACY_SCREEN_TOGGLE,
+    #[cfg(linux510)]
     KeySelectiveScreenshot = KEY_SELECTIVE_SCREENSHOT,
+    #[cfg(linux61)]
     KeyNextElement = KEY_NEXT_ELEMENT,
+    #[cfg(linux61)]
     KeyPreviousElement = KEY_PREVIOUS_ELEMENT,
+    #[cfg(linux61)]
     KeyAutopilotEngageToggle = KEY_AUTOPILOT_ENGAGE_TOGGLE,
+    #[cfg(linux61)]
     KeyMarkWaypoint = KEY_MARK_WAYPOINT,
+    #[cfg(linux61)]
     KeySos = KEY_SOS,
+    #[cfg(linux61)]
     KeyNavChart = KEY_NAV_CHART,
+    #[cfg(linux61)]
     KeyFishingChart = KEY_FISHING_CHART,
+    #[cfg(linux61)]
     KeySingleRangeRadar = KEY_SINGLE_RANGE_RADAR,
+    #[cfg(linux61)]
     KeyDualRangeRadar = KEY_DUAL_RANGE_RADAR,
+    #[cfg(linux61)]
     KeyRadarOverlay = KEY_RADAR_OVERLAY,
+    #[cfg(linux61)]
     KeyTraditionalSonar = KEY_TRADITIONAL_SONAR,
+    #[cfg(linux61)]
     KeyClearvuSonar = KEY_CLEARVU_SONAR,
+    #[cfg(linux61)]
     KeySidevuSonar = KEY_SIDEVU_SONAR,
+    #[cfg(linux61)]
     KeyNavInfo = KEY_NAV_INFO,
+    #[cfg(linux61)]
     KeyBrightnessMenu = KEY_BRIGHTNESS_MENU,
+    #[cfg(linux510)]
     KeyMacro1 = KEY_MACRO1,
+    #[cfg(linux510)]
     KeyMacro2 = KEY_MACRO2,
+    #[cfg(linux510)]
     KeyMacro3 = KEY_MACRO3,
+    #[cfg(linux510)]
     KeyMacro4 = KEY_MACRO4,
+    #[cfg(linux510)]
     KeyMacro5 = KEY_MACRO5,
+    #[cfg(linux510)]
     KeyMacro6 = KEY_MACRO6,
+    #[cfg(linux510)]
     KeyMacro7 = KEY_MACRO7,
+    #[cfg(linux510)]
     KeyMacro8 = KEY_MACRO8,
+    #[cfg(linux510)]
     KeyMacro9 = KEY_MACRO9,
+    #[cfg(linux510)]
     KeyMacro10 = KEY_MACRO10,
+    #[cfg(linux510)]
     KeyMacro11 = KEY_MACRO11,
+    #[cfg(linux510)]
     KeyMacro12 = KEY_MACRO12,
+    #[cfg(linux510)]
     KeyMacro13 = KEY_MACRO13,
+    #[cfg(linux510)]
     KeyMacro14 = KEY_MACRO14,
+    #[cfg(linux510)]
     KeyMacro15 = KEY_MACRO15,
+    #[cfg(linux510)]
     KeyMacro16 = KEY_MACRO16,
+    #[cfg(linux510)]
     KeyMacro17 = KEY_MACRO17,
+    #[cfg(linux510)]
     KeyMacro18 = KEY_MACRO18,
+    #[cfg(linux510)]
     KeyMacro19 = KEY_MACRO19,
+    #[cfg(linux510)]
     KeyMacro20 = KEY_MACRO20,
+    #[cfg(linux510)]
     KeyMacro21 = KEY_MACRO21,
+    #[cfg(linux510)]
     KeyMacro22 = KEY_MACRO22,
+    #[cfg(linux510)]
     KeyMacro23 = KEY_MACRO23,
+    #[cfg(linux510)]
     KeyMacro24 = KEY_MACRO24,
+    #[cfg(linux510)]
     KeyMacro25 = KEY_MACRO25,
+    #[cfg(linux510)]
     KeyMacro26 = KEY_MACRO26,
+    #[cfg(linux510)]
     KeyMacro27 = KEY_MACRO27,
+    #[cfg(linux510)]
     KeyMacro28 = KEY_MACRO28,
+    #[cfg(linux510)]
     KeyMacro29 = KEY_MACRO29,
+    #[cfg(linux510)]
     KeyMacro30 = KEY_MACRO30,
+    #[cfg(linux510)]
     KeyMacroRecordStart = KEY_MACRO_RECORD_START,
+    #[cfg(linux510)]
     KeyMacroRecordStop = KEY_MACRO_RECORD_STOP,
+    #[cfg(linux510)]
     KeyMacroPresetCycle = KEY_MACRO_PRESET_CYCLE,
+    #[cfg(linux510)]
     KeyMacroPreset1 = KEY_MACRO_PRESET1,
+    #[cfg(linux510)]
     KeyMacroPreset2 = KEY_MACRO_PRESET2,
+    #[cfg(linux510)]
     KeyMacroPreset3 = KEY_MACRO_PRESET3,
+    #[cfg(linux510)]
     KeyKbdLcdMenu1 = KEY_KBD_LCD_MENU1,
+    #[cfg(linux510)]
     KeyKbdLcdMenu2 = KEY_KBD_LCD_MENU2,
+    #[cfg(linux510)]
     KeyKbdLcdMenu3 = KEY_KBD_LCD_MENU3,
+    #[cfg(linux510)]
     KeyKbdLcdMenu4 = KEY_KBD_LCD_MENU4,
+    #[cfg(linux510)]
     KeyKbdLcdMenu5 = KEY_KBD_LCD_MENU5,
     BtnTriggerHappy1 = BTN_TRIGGER_HAPPY1, // Also BTN_TRIGGER_HAPPY
     BtnTriggerHappy2 = BTN_TRIGGER_HAPPY2,
@@ -772,6 +836,7 @@ pub enum AbsAxis {
     TiltY = ABS_TILT_Y,
     ToolWidth = ABS_TOOL_WIDTH,
     Volume = ABS_VOLUME,
+    #[cfg(linux61)]
     Profile = ABS_PROFILE,
     Misc = ABS_MISC,
     MtSlot = ABS_MT_SLOT,
@@ -810,6 +875,7 @@ pub enum SwitchCode {
     LineinInsert = SW_LINEIN_INSERT,
     MuteDevice = SW_MUTE_DEVICE,
     PenInserted = SW_PEN_INSERTED,
+    #[cfg(linux510)]
     MachineCover = SW_MACHINE_COVER,
 }
 

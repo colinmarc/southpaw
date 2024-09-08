@@ -11,14 +11,17 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v4
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+
     - run: sudo apt install libfuse3-dev
+
     - name: Build
-      run: cargo build --verbose
+      run: cargo build -v
     - name: Clippy
       run: cargo clippy --no-deps
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test -v
