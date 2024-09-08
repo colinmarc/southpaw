@@ -2,18 +2,20 @@
 
 ![tests](https://github.com/colinmarc/southpaw/actions/workflows/tests.yaml/badge.svg) [![docs](https://img.shields.io/docsrs/southpaw)](https://docs.rs/southpaw/latest)
 
-This is a crate that lets you emulate linux [evdev](https://docs.kernel.org/input/input.html) character devices completely in userspace, using [FUSE](https://www.kernel.org/doc/html/latest/filesystems/fuse.html).
+This is a library that lets you emulate linux [evdev](https://docs.kernel.org/input/input.html) character devices completely in userspace, using [FUSE](https://www.kernel.org/doc/html/latest/filesystems/fuse.html).
 
 ### Why would I want to do that?
 
-Linux has good support for emulating input devices, with [uinput](https://www.kernel.org/doc/html/latest/input/uinput.html). However, it suffers from a few drawbacks:
+Linux has good support for emulating input devices, with [uinput](https://www.kernel.org/doc/html/latest/input/uinput.html). However, uinput suffers from a few drawbacks:
 
- - It doesn't hew to any sort of namespacing, and the devices it emulates are global to the system. That makes it difficult to use inside containers.
+ - It doesn't hew to any sort of namespacing, and the devices it emulates are global to the system. That makes it difficult to use with containers.
  - Because of the above, it usually requires elevated privileges.
 
 Because FUSE mounts can be used inside mount namespaces, southpaw lets you simulate input devices in rootless containers, without even needing root inside the container.
 
 ### Features
+
+Basic publishing of events is supported, both for blocking and non-blocking readers. Force feedback is not supported yet.
 
 The following ioctls are currently implemented:
 
@@ -47,7 +49,4 @@ The following ioctls are currently implemented:
 | EVIOCGMASK       |   ❌    |
 | EVIOCSMASK       |   ❌    |
 | EVIOCSCLOCKID    |   ❌    |
-| EVIOCGVERSION    |   ❌    |
-| EVIOCGVERSION    |   ❌    |
 
-Basic reading and publishing events is supported, both for blocking and non-blocking readers. Force feedback is not supported yet.
