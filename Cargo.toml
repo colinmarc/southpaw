@@ -7,8 +7,9 @@ authors = ["Colin Marc <hi@colinmarc.com>"]
 license = "MIT"
 
 [dependencies.fuser]
-version = "0.14"
-default_features = false
+git = "https://github.com/colinmarc/fuser"
+rev = "1e22afdb868a86afd20ce598aec6e634a9fdc603"
+default-features = false
 features = ["abi-7-11"]
 
 [dependencies.rustix]
@@ -20,7 +21,9 @@ bit-vec = "0.8"
 libc = "0.2"
 log = "0.4"
 num_enum = "0.7"
+parking_lot = "0.12"
 seq-macro = "0.3.5"
+thunderdome = "0.6"
 uapi = "0.2"
 
 [dev-dependencies]

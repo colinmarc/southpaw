@@ -1,7 +1,7 @@
 use std::{io::Read as _, path::Path};
 
 use southpaw::sys::{ABS_HAT0X, ABS_HAT0Y, BTN_EAST, BTN_SOUTH, BTN_START, EV_ABS, EV_KEY};
-use southpaw::{AbsAxis, Device, KeyCode, Scancode};
+use southpaw::{AbsAxis, Device, DeviceTree, KeyCode, Scancode};
 
 const CODE: [(&str, u16, i32); 11] = [
     ("UP", ABS_HAT0Y, -1),
@@ -28,11 +28,10 @@ fn main() -> std::io::Result<()> {
     };
 
     let path = Path::new(&path);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)?;
+    let _ = std::fs::create_dir_all(path);
+
+    let mut tree = DeviceTree::new();
+    let _mount = tree.mount(path);
 
     let controller = Device::builder()
         .name("SNES Gamepad")
@@ -45,7 +44,7 @@ fn main() -> std::io::Result<()> {
             Scancode::AbsoluteAxis(AbsAxis::X),
             Scancode::AbsoluteAxis(AbsAxis::Y),
         ])
-        .mount(Path::new(&path))?;
+        .add_to_tree(&mut tree, "event1")?;
 
     println!("Press enter to begin sending the secret code...");
     let _ = std::io::stdin().read(&mut [0u8]).unwrap();

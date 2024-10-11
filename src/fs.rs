@@ -1,265 +1,388 @@
-use std::ffi::{CStr, CString};
-use std::ops::DerefMut as _;
-use std::sync::{Arc, Mutex};
-use std::time;
+use std::{
+    ffi::{CStr, OsStr, OsString},
+    path::Path,
+    sync::Arc,
+    time,
+};
 
 use bit_vec::BitVec;
 use fuser as fuse;
-use libc::{input_id, EFAULT, EINVAL, ENOENT, ENOTSUP, EPOLLIN, EWOULDBLOCK, O_NONBLOCK};
+use libc::{input_id, EBADF, EFAULT, EINVAL, ENOENT, ENOTSUP};
 use log::debug;
-use rustix::{io::Errno, time::ClockId};
+use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
+use rustix::{
+    io::Errno,
+    process::{RawGid, RawUid},
+};
+use thunderdome::{Arena, Index};
 
-use crate::cmd::{Cmd, EV_VERSION};
-use crate::ring::Ring;
-use crate::sys::*;
-use crate::InputEvent;
+use crate::{
+    cmd::{Cmd, EV_VERSION},
+    device::{DeviceAttr, DeviceState},
+    sys::{EV_ABS, EV_FF, EV_KEY, EV_LED, EV_MSC, EV_REL, EV_SND, EV_SW},
+};
 
-const MAX_RING_SIZE: usize = 1024 * 1024;
+pub(crate) use thunderdome::Index as Inode;
 
-pub(crate) struct DeviceFs {
-    pub(crate) root_attr: fuse::FileAttr,
-    pub(crate) dev_attr: DeviceAttr,
-    pub(crate) state: Arc<Mutex<DeviceState>>,
+struct Node {
+    name: OsString,
+    parent: Option<Index>,
+    attr: fuse::FileAttr,
+    contents: NodeType,
 }
 
-#[derive(Default, Debug, Clone)]
-pub(crate) struct DeviceSupport {
-    pub(crate) ev_bits: BitVec,
-    pub(crate) key_bits: BitVec,
-    pub(crate) rel_bits: BitVec,
-    pub(crate) abs_bits: BitVec,
-    pub(crate) msc_bits: BitVec,
-    pub(crate) led_bits: BitVec,
-    pub(crate) snd_bits: BitVec,
-    pub(crate) ff_bits: BitVec,
-    pub(crate) sw_bits: BitVec,
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut st = f.debug_struct("Node");
+
+        st.field("name", &self.name)
+            .field("parent", &self.parent)
+            .field("filetype", &self.attr.kind);
+
+        if let NodeType::Dir { children } = &self.contents {
+            st.field("children", children);
+        }
+
+        st.finish()
+    }
 }
 
-#[derive(Clone)]
-pub(crate) struct DeviceAttr {
-    pub(crate) name: Option<CString>,
-    pub(crate) phys: Option<CString>,
-    pub(crate) uniq: Option<CString>,
-    pub(crate) id: input_id,
-    pub(crate) prop_bits: BitVec,
-    pub(crate) support: DeviceSupport,
+enum NodeType {
+    Dir {
+        children: Vec<Index>,
+    },
+    Device {
+        dev_attr: Box<DeviceAttr>, // Boxed to avoid the enum being too big.
+        state: Arc<Mutex<DeviceState>>,
+    },
 }
 
-impl Default for DeviceAttr {
-    fn default() -> Self {
-        let mut attr = DeviceAttr {
-            name: None,
-            phys: None,
-            uniq: None,
-            id: input_id {
-                bustype: 0,
-                vendor: 0,
-                product: 0,
-                version: 0,
-            },
-            prop_bits: Default::default(),
-            support: Default::default(),
+pub(crate) struct DeviceTree {
+    uid: RawUid,
+    gid: RawGid,
+    dir_mode: u16,
+    root_index: Index,
+    nodes: Mutex<Arena<Node>>,
+}
+
+impl DeviceTree {
+    pub(crate) fn new() -> Self {
+        let start = time::SystemTime::now();
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let perm = 0o755;
+
+        let root_attr = fuse::FileAttr {
+            ino: fuse::FUSE_ROOT_ID,
+            size: 0,
+            blocks: 0,
+            atime: start,
+            mtime: start,
+            ctime: start,
+            crtime: start,
+            kind: fuse::FileType::Directory,
+            perm,
+            nlink: 1,
+            uid,
+            gid,
+            rdev: 1,
+            blksize: 512,
+            flags: 0,
         };
 
-        // EV_SYN is always supported.
-        set_bit(&mut attr.support.ev_bits, EV_SYN);
+        let mut arena = Arena::new();
+        let root_index = arena.insert(Node {
+            name: "/".into(),
+            parent: None,
+            attr: root_attr,
+            contents: NodeType::Dir {
+                children: Vec::new(),
+            },
+        });
 
-        attr
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct DeviceState {
-    pub(crate) defunct: bool,
-    clients: Vec<DeviceClient>,
-    ring: Ring<InputEvent>,
-    max_fh: u64,
-    grabbed_fh: Option<u64>,
-}
-
-struct DeviceClient {
-    fh: u64,
-    ring_offset: usize,
-    clock_id: ClockId,
-
-    /// A currently-blocking read.
-    // TODO: I'm unsure of the semantics of multiple reads on the same fd.
-    pending_read: Option<PendingRead>,
-
-    /// All currently-blocking polls. The value is the fuse-provided poll handle.
-    pending_polls: Vec<u64>,
-}
-
-struct PendingRead {
-    size: usize,
-    reply: fuse::ReplyData,
-}
-
-impl DeviceClient {
-    fn do_read(
-        &mut self,
-        ring: &Ring<InputEvent>,
-        flags: i32,
-        size: usize,
-        reply: fuse::ReplyData,
-    ) {
-        // There's already a blocking read in progress?
-        if self.pending_read.is_some() {
-            reply.error(EFAULT);
-            return;
+        Self {
+            uid,
+            gid,
+            dir_mode: perm,
+            root_index,
+            nodes: Mutex::new(arena),
         }
-
-        let ev_iter = ring.iter_from(self.ring_offset);
-        if ev_iter.len() == 0 {
-            if (flags & O_NONBLOCK) > 0 {
-                reply.error(EWOULDBLOCK);
-            } else {
-                self.pending_read = Some(PendingRead { size, reply });
-            }
-
-            return;
-        }
-
-        let ts = rustix::time::clock_gettime(self.clock_id);
-
-        let ev_size = size_of::<InputEvent>();
-        let n = (size / ev_size).min(ev_iter.len());
-
-        // let mut out = vec![0_u8; ev_size * n];
-        // let mut off = 0;
-
-        let evs: Vec<_> = ev_iter
-            .take(n)
-            .map({
-                |ev| InputEvent {
-                    time_tv_sec: ts.tv_sec,
-                    time_tv_usec: ts.tv_nsec / 1000,
-                    ..*ev
-                }
-            })
-            .collect();
-
-        let out: &[u8] = unsafe { std::slice::from_raw_parts(evs.as_ptr() as _, n * ev_size) };
-
-        self.ring_offset += n;
-        reply.data(out);
     }
 
-    fn do_poll(&mut self, ring: &Ring<InputEvent>, ph: u64, reply: fuse::ReplyPoll) {
-        if self.ring_offset < ring.current_offset() {
-            reply.poll(EPOLLIN.try_into().unwrap());
+    fn get_node(&self, ino: u64) -> Option<MappedMutexGuard<'_, Node>> {
+        let idx = if ino == fuse::FUSE_ROOT_ID {
+            self.root_index
         } else {
-            self.pending_polls.push(ph);
-            reply.poll(0);
+            Index::from_bits(ino)?
+        };
+
+        match MutexGuard::try_map(self.nodes.lock(), |nodes| nodes.get_mut(idx)) {
+            Ok(v) => Some(v),
+            Err(_) => None,
         }
     }
-}
 
-impl DeviceState {
-    fn allocate_client(&mut self) -> u64 {
-        self.max_fh = self.max_fh.checked_add(1).expect("file handle overflow");
+    /// Creates a leaf node for a device, along with a directory for each of its
+    /// parents.
+    pub(crate) fn create_device_node(
+        &self,
+        path: impl AsRef<Path>,
+        dev_attr: Box<DeviceAttr>,
+        state: Arc<Mutex<DeviceState>>,
+    ) -> Index {
+        assert!(path.as_ref().is_relative());
 
-        let fh = self.max_fh;
-        self.clients.push(DeviceClient {
-            fh,
-            ring_offset: self.ring.current_offset(),
-            clock_id: ClockId::Realtime,
+        let mut nodes = self.nodes.lock();
 
-            pending_read: None,
-            pending_polls: Vec::new(),
-        });
+        let t = time::SystemTime::now();
+        let parent = mkdir_all(
+            &mut nodes,
+            self.root_index,
+            path.as_ref().parent().unwrap(),
+            fuse::FileAttr {
+                ino: 0,
+                size: 0,
+                blocks: 0,
+                atime: t,
+                mtime: t,
+                ctime: t,
+                crtime: t,
+                kind: fuse::FileType::Directory,
+                perm: self.dir_mode,
+                nlink: 1,
+                uid: self.uid,
+                gid: self.gid,
+                rdev: 1,
+                blksize: 512,
+                flags: 0,
+            },
+        );
 
-        fh
+        insert_node(
+            &mut nodes,
+            parent,
+            Node {
+                name: path.as_ref().file_name().unwrap().to_owned(),
+                parent: Some(parent),
+                attr: fuse::FileAttr {
+                    ino: 0,
+                    size: 0,
+                    blocks: 0,
+                    atime: t,
+                    mtime: t,
+                    ctime: t,
+                    crtime: t,
+                    kind: fuse::FileType::RegularFile,
+                    perm: 0o1755,
+                    nlink: 1,
+                    uid: self.uid,
+                    gid: self.gid,
+                    rdev: 1,
+                    blksize: 512,
+                    flags: 0,
+                },
+                contents: NodeType::Device { dev_attr, state },
+            },
+        )
     }
 
-    fn grab(&mut self, fh: u64) -> Result<(), Errno> {
-        if self.grabbed_fh.is_some() {
-            return Err(Errno::BUSY);
-        }
-
-        self.grabbed_fh = Some(fh);
-        Ok(())
-    }
-
-    fn ungrab(&mut self, fh: u64) -> Result<(), Errno> {
-        if self.grabbed_fh != Some(fh) {
-            return Err(Errno::INVAL);
-        }
-
-        self.grabbed_fh = None;
-        Ok(())
-    }
-
-    pub(crate) fn write_packet(
-        &mut self,
-        events: impl AsRef<[InputEvent]>,
-        notifier: &fuse::Notifier,
-    ) -> std::io::Result<()> {
-        let evs = events.as_ref();
-        if evs.is_empty() {
-            return Ok(());
-        } else if evs.iter().any(|ev| ev.event_type == EV_SYN) {
-            return Err(std::io::Error::from_raw_os_error(EINVAL));
-        }
-
-        // Free up space in the ring.
-        if let Some(min_offset) = self.clients.iter().map(|c| c.ring_offset).min() {
-            let write_offset = self.ring.current_offset() + evs.len();
-
-            // Skip forward for clients that are too far behind.
-            if write_offset - min_offset > MAX_RING_SIZE {
-                let off = write_offset - MAX_RING_SIZE;
-
-                self.ring.discard_until(off);
-                for client in self.clients.iter_mut() {
-                    client.ring_offset = client.ring_offset.max(off);
-                }
-            } else {
-                self.ring.discard_until(min_offset);
-            }
-        }
-
-        // Write events into the ring.
-        self.ring.extend(evs.iter().copied());
-        self.ring.push_back(InputEvent {
-            time_tv_sec: 0,
-            time_tv_usec: 0,
-            event_type: EV_SYN,
-            code: SYN_REPORT,
-            value: 0,
-        });
-
-        // Trigger blocking polls and reads.
-        for client in self.clients.iter_mut() {
-            if self.grabbed_fh.is_some_and(|fh| fh != client.fh) {
-                continue;
-            }
-
-            for ph in client.pending_polls.drain(..) {
-                notifier.poll(ph)?;
-            }
-
-            if let Some(pending_read) = client.pending_read.take() {
-                client.do_read(&self.ring, 0, pending_read.size, pending_read.reply);
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl fuse::Filesystem for DeviceFs {
-    fn open(&mut self, _req: &fuse::Request<'_>, ino: u64, _flags: i32, reply: fuse::ReplyOpen) {
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
+    /// Removes the leaf node for a device, along with any dangling parents.
+    pub(crate) fn remove_device_node(&self, index: Index) {
+        let mut nodes = self.nodes.lock();
+        let Some(node) = nodes.remove(index) else {
             return;
+        };
+
+        let mut index = index;
+        let mut parent = node.parent.unwrap(); // Leaf nodes always have a parent.
+        loop {
+            assert!(nodes.contains(parent));
+            let NodeType::Dir { children } = &mut nodes[parent].contents else {
+                unreachable!(); // The parent is always a dir.
+            };
+
+            // Remove ourselves from the parent node.
+            children.retain(|i| i != &index);
+
+            // Continue up the chain if the parent is dangling.
+            if children.is_empty() && parent != self.root_index {
+                index = parent;
+                parent = nodes[index].parent.unwrap(); // We're not at the root.
+
+                nodes.remove(index);
+            } else {
+                return;
+            }
+        }
+    }
+}
+
+fn lookup_child(nodes: &Arena<Node>, parent: Index, name: &OsStr) -> Option<Index> {
+    let NodeType::Dir { children } = &nodes.get(parent)?.contents else {
+        return None;
+    };
+
+    for child in children {
+        if nodes[*child].name == name {
+            return Some(*child);
+        }
+    }
+
+    None
+}
+
+fn mkdir_all(nodes: &mut Arena<Node>, root: Index, path: &Path, attr: fuse::FileAttr) -> Index {
+    let parent = match path.parent() {
+        None => return root, // This means that path == Path("").
+        Some(p) => mkdir_all(nodes, root, p, attr),
+    };
+
+    let name = path.file_name().unwrap().to_owned();
+    if let Some(child_idx) = lookup_child(nodes, parent, &name) {
+        return child_idx;
+    }
+
+    // No matching parent, let's create one.
+    insert_node(
+        nodes,
+        parent,
+        Node {
+            name: path.file_name().unwrap().to_owned(),
+            parent: Some(parent),
+            attr,
+            contents: NodeType::Dir {
+                children: Vec::new(),
+            },
+        },
+    )
+}
+
+fn insert_node(nodes: &mut Arena<Node>, parent: Index, node: Node) -> Index {
+    let index = nodes.insert(node);
+    nodes[index].attr.ino = index.to_bits();
+
+    // Insert into the parent's children.
+    let NodeType::Dir { children } = &mut nodes[parent].contents else {
+        unreachable!()
+    };
+    children.push(index);
+
+    index
+}
+
+pub(crate) struct Fs {
+    tree: Arc<DeviceTree>,
+    max_fh: u64,
+}
+
+impl Fs {
+    pub(crate) fn new(tree: Arc<DeviceTree>) -> Self {
+        Self { tree, max_fh: 0 }
+    }
+}
+
+impl fuse::Filesystem for Fs {
+    fn destroy(&mut self) {
+        let mut nodes = self.tree.nodes.lock();
+        for (_, node) in nodes.iter_mut() {
+            if let NodeType::Device { state, .. } = &mut node.contents {
+                state.lock().defunct = true
+            }
+        }
+    }
+
+    fn lookup(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        reply: fuse::ReplyEntry,
+    ) {
+        let parent_idx = if parent == fuse::FUSE_ROOT_ID {
+            Some(self.tree.root_index)
+        } else {
+            Index::from_bits(parent)
+        };
+
+        let Some(parent_idx) = parent_idx else {
+            return reply.error(ENOENT);
+        };
+
+        let nodes = self.tree.nodes.lock();
+        if let Some(child) = lookup_child(&nodes, parent_idx, name) {
+            debug!("lookup ino: {}", nodes[child].attr.ino);
+            return reply.entry(&time::Duration::ZERO, &nodes[child].attr, 0);
         }
 
-        let fh = self.state.lock().unwrap().allocate_client();
+        reply.error(ENOENT);
+    }
+
+    fn getattr(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        ino: u64,
+        _fh: Option<u64>,
+        reply: fuse::ReplyAttr,
+    ) {
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
+
+        reply.attr(&time::Duration::ZERO, &node.attr);
+    }
+
+    fn open(&mut self, req: &fuse::Request<'_>, ino: u64, _flags: i32, reply: fuse::ReplyOpen) {
+        if ino == fuse::FUSE_ROOT_ID {
+            return reply.error(ENOTSUP);
+        }
+
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
+
+        let NodeType::Device { state, .. } = &node.contents else {
+            return reply.error(ENOTSUP);
+        };
+
+        self.max_fh = self.max_fh.checked_add(1).expect("file handle overflow");
+        let fh = self.max_fh;
+
+        state.lock().insert_client(fh, req.notifier());
         reply.opened(
             fh,
             fuse::consts::FOPEN_DIRECT_IO | fuse::consts::FOPEN_NONSEEKABLE,
-        );
+        )
+    }
+
+    fn read(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        ino: u64,
+        fh: u64,
+        _offset: i64,
+        size: u32,
+        flags: i32,
+        _lock_owner: Option<u64>,
+        reply: fuse::ReplyData,
+    ) {
+        debug!("read fh: {fh}, size: {size}, flags: {flags:?}");
+
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
+
+        let NodeType::Device { state, .. } = &node.contents else {
+            return reply.error(ENOTSUP);
+        };
+
+        let mut nodes = state.lock();
+        let state = std::ops::DerefMut::deref_mut(&mut nodes);
+
+        let Some(client) = state.clients.iter_mut().find(|c| c.fh == fh) else {
+            return reply.error(EFAULT);
+        };
+
+        client.do_read(&state.ring, flags, size as usize, reply);
     }
 
     fn release(
@@ -272,42 +395,66 @@ impl fuse::Filesystem for DeviceFs {
         _flush: bool,
         reply: fuse::ReplyEmpty,
     ) {
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
-            return;
-        }
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
 
-        let mut state = self.state.lock().unwrap();
+        let NodeType::Device { state, .. } = &node.contents else {
+            return reply.error(EBADF);
+        };
+
+        let mut state = state.lock();
         if state.grabbed_fh == Some(fh) {
             state.grabbed_fh = None;
         }
 
         state.clients.retain(|c| c.fh != fh);
-        reply.ok();
     }
 
-    fn lookup(
+    fn readdir(
         &mut self,
-        _req: &fuse::Request<'_>,
-        _parent: u64,
-        name: &std::ffi::OsStr,
-        reply: fuse::ReplyEntry,
+        _req: &fuser::Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: fuser::ReplyDirectory,
     ) {
-        if name == "/" {
-            reply.entry(&time::Duration::MAX, &self.root_attr, 0);
-            return;
+        let idx = if ino == fuse::FUSE_ROOT_ID {
+            Some(self.tree.root_index)
+        } else {
+            Index::from_bits(ino)
+        };
+
+        let Some(idx) = idx else {
+            return reply.error(ENOENT);
+        };
+
+        let nodes = self.tree.nodes.lock();
+        let Some(parent_node) = nodes.get(idx) else {
+            return reply.error(ENOENT);
+        };
+
+        let NodeType::Dir { children } = &parent_node.contents else {
+            return reply.error(ENOTSUP);
+        };
+
+        for (off, child) in children.iter().enumerate().skip(offset as usize) {
+            let Some(node) = nodes.get(*child) else {
+                return reply.error(EFAULT);
+            };
+
+            let filetype = match node.contents {
+                NodeType::Dir { .. } => fuse::FileType::Directory,
+                NodeType::Device { .. } => fuse::FileType::RegularFile,
+            };
+
+            debug!("child ino: {child:?} / {}", child.to_bits());
+            if reply.add(child.to_bits(), (off + 1) as _, filetype, &node.name) {
+                return reply.ok();
+            }
         }
 
-        reply.error(ENOENT);
-    }
-
-    fn getattr(&mut self, _req: &fuse::Request<'_>, ino: u64, reply: fuse::ReplyAttr) {
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
-            return;
-        }
-
-        reply.attr(&time::Duration::MAX, &self.root_attr);
+        reply.ok()
     }
 
     fn ioctl(
@@ -321,11 +468,6 @@ impl fuse::Filesystem for DeviceFs {
         out_size: u32,
         reply: fuse::ReplyIoctl,
     ) {
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
-            return;
-        }
-
         let Ok(out_size) = usize::try_from(out_size) else {
             reply.error(EINVAL);
             return;
@@ -345,64 +487,44 @@ impl fuse::Filesystem for DeviceFs {
             in_data.len(),
         );
 
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
+
+        let NodeType::Device { state, dev_attr } = &node.contents else {
+            return reply.error(EBADF);
+        };
+
         match cmd {
             Cmd::GetVersion => reply.ioctl(0, &EV_VERSION.to_ne_bytes()),
             Cmd::GetId => {
                 let mut out = vec![0_u8; size_of::<input_id>()];
                 unsafe {
-                    std::ptr::write(out.as_mut_ptr() as *mut _, self.dev_attr.id);
+                    std::ptr::write(out.as_mut_ptr() as *mut _, dev_attr.id);
                 }
 
                 reply.ioctl(0, &out);
             }
-            Cmd::GetName(len) => reply_str(reply, len, self.dev_attr.name.as_deref()),
-            Cmd::GetPhys(len) => reply_str(reply, len, self.dev_attr.phys.as_deref()),
-            Cmd::GetUniq(len) => reply_str(reply, len, self.dev_attr.uniq.as_deref()),
-            Cmd::GetProps(len) => reply_bits(reply, len, &self.dev_attr.prop_bits),
+            Cmd::GetName(len) => reply_str(reply, len, dev_attr.name.as_deref()),
+            Cmd::GetPhys(len) => reply_str(reply, len, dev_attr.phys.as_deref()),
+            Cmd::GetUniq(len) => reply_str(reply, len, dev_attr.uniq.as_deref()),
+            Cmd::GetProps(len) => reply_bits(reply, len, &dev_attr.prop_bits),
             Cmd::GetEventBits(ty, len) => match ty {
-                0 => reply_bits(reply, len, &self.dev_attr.support.ev_bits),
-                EV_KEY => reply_bits(reply, len, &self.dev_attr.support.key_bits),
-                EV_REL => reply_bits(reply, len, &self.dev_attr.support.rel_bits),
-                EV_ABS => reply_bits(reply, len, &self.dev_attr.support.abs_bits),
-                EV_MSC => reply_bits(reply, len, &self.dev_attr.support.msc_bits),
-                EV_LED => reply_bits(reply, len, &self.dev_attr.support.led_bits),
-                EV_SND => reply_bits(reply, len, &self.dev_attr.support.snd_bits),
-                EV_FF => reply_bits(reply, len, &self.dev_attr.support.ff_bits),
-                EV_SW => reply_bits(reply, len, &self.dev_attr.support.sw_bits),
+                0 => reply_bits(reply, len, &dev_attr.support.ev_bits),
+                EV_KEY => reply_bits(reply, len, &dev_attr.support.key_bits),
+                EV_REL => reply_bits(reply, len, &dev_attr.support.rel_bits),
+                EV_ABS => reply_bits(reply, len, &dev_attr.support.abs_bits),
+                EV_MSC => reply_bits(reply, len, &dev_attr.support.msc_bits),
+                EV_LED => reply_bits(reply, len, &dev_attr.support.led_bits),
+                EV_SND => reply_bits(reply, len, &dev_attr.support.snd_bits),
+                EV_FF => reply_bits(reply, len, &dev_attr.support.ff_bits),
+                EV_SW => reply_bits(reply, len, &dev_attr.support.sw_bits),
                 _ => reply.error(EINVAL),
             },
-            Cmd::Grab(v) if v > 0 => reply_empty(reply, self.state.lock().unwrap().grab(fh)),
-            Cmd::Grab(v) if v <= 0 => reply_empty(reply, self.state.lock().unwrap().ungrab(fh)),
+            Cmd::Grab(v) if v > 0 => reply_empty(reply, state.lock().grab(fh)),
+            Cmd::Grab(v) if v <= 0 => reply_empty(reply, state.lock().ungrab(fh)),
             _ => reply.error(ENOTSUP),
         }
-    }
-
-    fn read(
-        &mut self,
-        _req: &fuse::Request<'_>,
-        ino: u64,
-        fh: u64,
-        _offset: i64,
-        size: u32,
-        flags: i32,
-        _lock_owner: Option<u64>,
-        reply: fuse::ReplyData,
-    ) {
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
-            return;
-        }
-
-        debug!("read fh: {fh}, size: {size}, flags: {flags:?}");
-        let mut guard = self.state.lock().unwrap();
-        let state = guard.deref_mut();
-
-        let Some(client) = state.clients.iter_mut().find(|c| c.fh == fh) else {
-            reply.error(EFAULT);
-            return;
-        };
-
-        client.do_read(&state.ring, flags, size as usize, reply)
     }
 
     fn poll(
@@ -416,13 +538,17 @@ impl fuse::Filesystem for DeviceFs {
         reply: fuse::ReplyPoll,
     ) {
         debug!("poll ino: {ino}, fh: {fh}, kh: {ph}, flags: {_flags}");
-        if ino != fuse::FUSE_ROOT_ID {
-            reply.error(ENOENT);
-            return;
-        }
 
-        let mut guard = self.state.lock().unwrap();
-        let state = guard.deref_mut();
+        let Some(node) = self.tree.get_node(ino) else {
+            return reply.error(ENOENT);
+        };
+
+        let NodeType::Device { state, .. } = &node.contents else {
+            return reply.error(EBADF);
+        };
+
+        let mut nodes = state.lock();
+        let state = std::ops::DerefMut::deref_mut(&mut nodes);
 
         let Some(client) = state.clients.iter_mut().find(|c| c.fh == fh) else {
             reply.error(EFAULT);
@@ -430,10 +556,6 @@ impl fuse::Filesystem for DeviceFs {
         };
 
         client.do_poll(&state.ring, ph, reply)
-    }
-
-    fn destroy(&mut self) {
-        self.state.lock().unwrap().defunct = true
     }
 }
 
@@ -456,5 +578,21 @@ fn reply_empty(reply: fuse::ReplyIoctl, res: Result<(), Errno>) {
     match res {
         Ok(_) => reply.ioctl(0, &[]),
         Err(errno) => reply.error(errno.raw_os_error()),
+    }
+}
+
+#[test]
+fn first_inode_is_zero() {
+    for _ in 0..10 {
+        let mut a = Arena::new();
+        assert_eq!(a.insert("foobar").to_bits(), u32::MAX as u64 + 1);
+    }
+}
+
+#[test]
+fn arena_index_is_never_root() {
+    let mut a = Arena::new();
+    for _ in 0..(1024 * 1024) {
+        assert_ne!(a.insert(1).to_bits(), fuse::FUSE_ROOT_ID);
     }
 }

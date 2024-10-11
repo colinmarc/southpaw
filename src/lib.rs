@@ -18,18 +18,24 @@
 
 use std::{
     ffi::CString,
+    os::fd::OwnedFd,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 mod cmd;
+mod device;
 mod enums;
 mod fs;
 mod ring;
 
-pub use enums::*;
+use device::{DeviceAttr, DeviceState};
 use fs::*;
 use fuser as fuse;
+use parking_lot::Mutex;
+
+pub use enums::*;
+pub use fuse::Mount;
 
 #[doc = "input constants used to construct [InputEvent]s"]
 #[allow(missing_docs)]
@@ -71,21 +77,125 @@ impl InputEvent {
     }
 }
 
+/// A FUSE filesystem representing a tree of devices. Can be safely cloned and
+/// modified.
+#[derive(Clone)]
+pub struct DeviceTree {
+    tree: Arc<fs::DeviceTree>,
+}
+
+impl std::fmt::Debug for DeviceTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceTree").finish_non_exhaustive()
+    }
+}
+
+impl Default for DeviceTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceTree {
+    /// Creates a new empty filesystem with no devices. To mount it somewhere,
+    /// call [DeviceTree::mount].
+    pub fn new() -> Self {
+        let tree = Arc::new(fs::DeviceTree::new());
+        Self { tree }
+    }
+
+    /// Creates a new device with empty attributes. For more control over the
+    /// device, use [Device::builder].
+    pub fn new_device(&mut self, path: impl AsRef<Path>) -> std::io::Result<Device> {
+        self.insert(path, Default::default())
+    }
+
+    fn insert(
+        &mut self,
+        path: impl AsRef<Path>,
+        dev_attr: Box<DeviceAttr>,
+    ) -> std::io::Result<Device> {
+        let path = match normalize_path(path) {
+            Ok(p) => p,
+            Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)),
+        };
+
+        let name = dev_attr
+            .name
+            .as_ref()
+            .map(|s| s.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+
+        let state = Arc::new(Mutex::new(Default::default()));
+        let inode = self.tree.create_device_node(path, dev_attr, state.clone());
+
+        Ok(Device {
+            tree: self.tree.clone(),
+            inode,
+            state,
+            name,
+        })
+    }
+
+    /// Wraps an existing /dev/fuse FD, and spawns a thread to handle requests
+    /// from the kernel. Does not mount the FD anywhere.
+    pub fn wrap_fd(&self, fd: OwnedFd) {
+        let fs = Fs::new(self.tree.clone());
+        let mut session = fuser::Session::from_fd(fd, fs, fuser::SessionACL::Owner);
+
+        std::thread::Builder::new()
+            .name("southpaw".to_string())
+            .spawn(move || session.run())
+            .unwrap();
+    }
+
+    /// Mounts the device tree at the given path, spawning a thread to handle
+    /// requests from the kernel. The path must exist.
+    ///
+    /// The returned object can be dropped to unmount the filesystem.
+    pub fn mount(&self, path: impl AsRef<Path>) -> std::io::Result<Mount> {
+        let fs = Fs::new(self.tree.clone());
+        let mut session = fuser::Session::new(fs, fuser::SessionACL::Owner)?;
+
+        let mount = Mount::new(
+            &session,
+            path,
+            &[
+                fuse::MountOption::FSName("southpaw".to_string()),
+                fuse::MountOption::Dev,
+                fuse::MountOption::AllowOther,
+            ],
+        )?;
+
+        std::thread::Builder::new()
+            .name("southpaw".to_string())
+            .spawn(move || session.run())?;
+
+        Ok(mount)
+    }
+}
+
 /// A file that acts like the character devices you would usually see in
-/// /dev/input/event*.
+/// /dev/input/event*. Situated in a [DeviceTree].
+///
+/// Dropping the [Device] removes the device from the tree.
 pub struct Device {
-    _session: fuse::BackgroundSession,
-    notifier: fuse::Notifier,
+    tree: Arc<fs::DeviceTree>,
+    inode: Inode,
     state: Arc<Mutex<DeviceState>>,
-    path: PathBuf,
     name: String,
 }
 
+impl Drop for Device {
+    fn drop(&mut self) {
+        // self.tree.remove_device(self.inode);
+    }
+}
+
 /// A temporary object for configuring a [Device].
+#[derive(Default)]
 pub struct DeviceBuilder {
-    root_attr: fuser::FileAttr,
-    dev_attr: DeviceAttr,
-    mount_options: Vec<fuser::MountOption>,
+    dev_attr: Box<DeviceAttr>,
 }
 
 /// An error returned when the FUSE filesystem underlying a [Device] was
@@ -105,38 +215,6 @@ impl std::error::Error for DefunctError {}
 impl std::fmt::Debug for DeviceBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceBuilder").finish_non_exhaustive()
-    }
-}
-
-impl Default for DeviceBuilder {
-    fn default() -> Self {
-        let start = std::time::SystemTime::now();
-        let uid = rustix::process::getuid().as_raw();
-        let gid = rustix::process::getgid().as_raw();
-
-        let mount_options = vec![fuse::MountOption::FSName("southpaw".to_string())];
-
-        Self {
-            root_attr: fuse::FileAttr {
-                ino: 1,
-                size: 0,
-                blocks: 0,
-                atime: start,
-                mtime: start,
-                ctime: start,
-                crtime: start,
-                kind: fuse::FileType::RegularFile,
-                perm: 0o660,
-                nlink: 1,
-                uid,
-                gid,
-                rdev: 0,
-                blksize: 512,
-                flags: 0,
-            },
-            dev_attr: Default::default(),
-            mount_options,
-        }
     }
 }
 
@@ -233,40 +311,17 @@ impl DeviceBuilder {
         self
     }
 
-    /// Create the device by mounting it at the given path. The path must exist.
-    pub fn mount(self, path: impl AsRef<Path>) -> std::io::Result<Device> {
-        let state = Arc::new(Mutex::new(Default::default()));
-        let fs = DeviceFs {
-            root_attr: self.root_attr,
-            state: state.clone(),
-            dev_attr: self.dev_attr.clone(),
-        };
-
-        let path = path.as_ref().to_owned();
-        let session = fuser::spawn_mount2(fs, &path, &self.mount_options)?;
-        let notifier = session.notifier();
-
-        let name = self
-            .dev_attr
-            .name
-            .map_or(String::new(), |s| s.to_str().unwrap().to_owned());
-        Ok(Device {
-            _session: session,
-            notifier,
-            state,
-            name,
-            path,
-        })
+    /// Adds the device to a [DeviceTree].
+    pub fn add_to_tree(
+        self,
+        tree: &mut DeviceTree,
+        path: impl AsRef<Path>,
+    ) -> std::io::Result<Device> {
+        tree.insert(path, self.dev_attr)
     }
 }
 
 impl Device {
-    /// Mounts a new device at `path` with all default options. The path must
-    /// already exist.
-    pub fn new(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        Self::builder().mount(path)
-    }
-
     /// Creates a new device using the builder pattern.
     pub fn builder() -> DeviceBuilder {
         DeviceBuilder::default()
@@ -284,7 +339,7 @@ impl Device {
     /// ignored, and replaced by the current time when the packet is written to
     /// clients.
     pub fn publish_packet(&self, events: impl AsRef<[InputEvent]>) -> std::io::Result<()> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if state.defunct {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
@@ -292,25 +347,73 @@ impl Device {
             ));
         }
 
-        state.write_packet(events, &self.notifier)
+        state.write_packet(events)
     }
 }
 
 impl std::fmt::Debug for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Device")
-            .field("path", &self.path)
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
+}
+
+fn normalize_path(path: impl AsRef<Path>) -> Result<PathBuf, &'static str> {
+    use std::path::Component;
+
+    let mut ret = PathBuf::new();
+    for component in path.as_ref().components() {
+        match component {
+            Component::Prefix(..) => return Err("Invalid path"),
+            Component::RootDir => return Err("Path must be relative"),
+            Component::CurDir => (),
+            Component::ParentDir => {
+                if !ret.pop() {
+                    return Err("Path must be relative");
+                }
+            }
+            Component::Normal(c) => {
+                ret.push(c);
+            }
+        }
+    }
+
+    if ret.as_os_str().is_empty() {
+        return Err("Path must be non-empty");
+    }
+
+    Ok(ret)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tmp_mount_point() -> tempfile::NamedTempFile {
-        tempfile::NamedTempFile::new().expect("failed to create tmpfile")
+    fn tmp_mount_point() -> tempfile::TempDir {
+        tempfile::TempDir::new().expect("failed to create tmpfile")
+    }
+
+    #[test]
+    fn device_paths() {
+        assert_eq!(normalize_path(""), Err("Path must be non-empty"));
+        assert_eq!(normalize_path("."), Err("Path must be non-empty"));
+        assert_eq!(normalize_path(".."), Err("Path must be relative"));
+        assert_eq!(
+            normalize_path("/root/foo/bar"),
+            Err("Path must be relative")
+        );
+        assert_eq!(
+            normalize_path("foo/../../bar"),
+            Err("Path must be relative")
+        );
+
+        assert_eq!(normalize_path("foo"), Ok(Path::new("foo").to_owned()));
+        assert_eq!(normalize_path("./foo"), Ok(Path::new("foo").to_owned()));
+        assert_eq!(
+            normalize_path("foo/bar/../baz"),
+            Ok(Path::new("foo/baz").to_owned())
+        );
     }
 
     #[test]
@@ -334,16 +437,112 @@ mod tests {
     }
 
     #[test]
+    fn absinfo_abi_compatible() {
+        let ev = AbsInfo {
+            value: 0,
+            minimum: -128,
+            maximum: 128,
+            fuzz: 123,
+            flat: 456,
+            resolution: 1,
+        };
+
+        let ev_transmuted: libc::input_absinfo = unsafe { std::mem::transmute(ev) };
+
+        assert_eq!(ev_transmuted.value, ev.value);
+        assert_eq!(ev_transmuted.minimum, ev.minimum);
+        assert_eq!(ev_transmuted.maximum, ev.maximum);
+        assert_eq!(ev_transmuted.fuzz, ev.fuzz);
+        assert_eq!(ev_transmuted.flat, ev.flat);
+        assert_eq!(ev_transmuted.resolution, ev.resolution);
+    }
+
+    fn readdir(p: impl AsRef<Path>) -> Vec<String> {
+        assert!(
+            p.as_ref().is_dir(),
+            "{} is not a directory",
+            p.as_ref().display()
+        );
+
+        std::fs::read_dir(p.as_ref())
+            .expect("read_dir")
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .strip_prefix(p.as_ref())
+                    .unwrap()
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn tree_operations() {
+        let p = tmp_mount_point();
+        let p = p.path();
+        let mut tree = DeviceTree::new();
+
+        let _mount = tree.mount(p);
+
+        assert_eq!(<Vec<String>>::new(), readdir(p));
+
+        let dev1 = Device::builder()
+            .name("test device")
+            .id(BusType::Usb, 1, 2, 3)
+            .property(InputProperty::PointingStick)
+            .add_to_tree(&mut tree, "foo/bar/baz/event1")
+            .expect("failed to create device");
+
+        let dev2 = Device::builder()
+            .name("test device")
+            .id(BusType::Usb, 1, 2, 3)
+            .property(InputProperty::PointingStick)
+            .add_to_tree(&mut tree, "foo/qux/event2")
+            .expect("failed to create device");
+
+        assert_eq!(vec!["foo".to_string()], readdir(p));
+        assert_eq!(
+            vec!["bar".to_string(), "qux".to_string()],
+            readdir(p.join("foo"))
+        );
+        assert_eq!(vec!["baz".to_string()], readdir(p.join("foo/bar")));
+        assert_eq!(vec!["event1".to_string()], readdir(p.join("foo/bar/baz")));
+        assert_eq!(vec!["event2".to_string()], readdir(p.join("foo/qux")));
+
+        let metadata = p.join("foo/bar/baz/event1").metadata().expect("metadata");
+        assert!(metadata.is_file());
+
+        drop(dev2);
+        assert!(!p.join("foo/qux/event2").exists());
+        assert!(!p.join("foo/qux").exists());
+        assert_eq!(vec!["foo".to_string()], readdir(p));
+        assert_eq!(vec!["bar".to_string()], readdir(p.join("foo")));
+
+        drop(dev1);
+        assert!(!p.join("foo/bar/baz/event1").exists());
+        assert!(!p.join("foo/bar/baz").exists());
+        assert!(!p.join("foo/bar").exists());
+        assert!(!p.join("foo").exists());
+
+        assert_eq!(<Vec<String>>::new(), readdir(p));
+    }
+
+    #[test]
     fn device_basic_attrs() {
         let p = tmp_mount_point();
+        let mut tree = DeviceTree::new();
+        let _mount = tree.mount(&p);
+
         let _dev = Device::builder()
             .name("test device")
             .id(BusType::Usb, 1, 2, 3)
             .property(InputProperty::PointingStick)
-            .mount(&p)
+            .add_to_tree(&mut tree, "test")
             .expect("failed to create device");
 
-        let dev = evdev::Device::open(p).expect("failed to open device");
+        let dev = evdev::Device::open(p.path().join("test")).expect("failed to open device");
         assert_eq!(dev.name(), Some("test device"));
 
         let id = dev.input_id();
@@ -359,6 +558,9 @@ mod tests {
     #[test]
     fn device_supported_keys() {
         let p = tmp_mount_point();
+        let mut tree = DeviceTree::new();
+        let _mount = tree.mount(&p);
+
         let _dev = Device::builder()
             .supported_event_codes([
                 Scancode::Key(KeyCode::BtnSouth),
@@ -368,10 +570,10 @@ mod tests {
                 Scancode::AbsoluteAxis(AbsAxis::X),
                 Scancode::AbsoluteAxis(AbsAxis::Y),
             ])
-            .mount(&p)
+            .add_to_tree(&mut tree, "test")
             .expect("failed to create device");
 
-        let dev = evdev::Device::open(p).expect("failed to open device");
+        let dev = evdev::Device::open(p.path().join("test")).expect("failed to open device");
         let supported_events: Vec<_> = dev.supported_events().iter().collect();
         assert_eq!(
             supported_events,
