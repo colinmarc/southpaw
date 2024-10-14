@@ -33,11 +33,10 @@ use device::{DeviceAttr, DeviceState};
 use fs::*;
 use fuser as fuse;
 use libc::input_absinfo;
-use log::error;
 use parking_lot::Mutex;
 
 pub use enums::*;
-pub use fuse::Mount;
+pub use fuse::BackgroundSession as Mount;
 
 #[doc = "input constants used to construct [InputEvent]s"]
 #[allow(missing_docs)]
@@ -161,7 +160,7 @@ impl DeviceTree {
     /// from the kernel. Does not mount the FD anywhere.
     pub fn wrap_fd(&self, fd: OwnedFd) {
         let fs = Fs::new(self.tree.clone());
-        let mut session = fuser::Session::from_fd(fd, fs, fuser::SessionACL::Owner);
+        let mut session = fuse::Session::from_fd(fs, fd, fuse::SessionACL::Owner);
 
         std::thread::Builder::new()
             .name("southpaw".to_string())
@@ -175,10 +174,8 @@ impl DeviceTree {
     /// The returned object can be dropped to unmount the filesystem.
     pub fn mount(&self, path: impl AsRef<Path>) -> std::io::Result<Mount> {
         let fs = Fs::new(self.tree.clone());
-        let mut session = fuser::Session::new(fs, fuser::SessionACL::Owner)?;
-
-        let mount = Mount::new(
-            &session,
+        let session = fuser::Session::new(
+            fs,
             path,
             &[
                 fuse::MountOption::FSName("southpaw".to_string()),
@@ -187,15 +184,7 @@ impl DeviceTree {
             ],
         )?;
 
-        std::thread::Builder::new()
-            .name("southpaw".to_string())
-            .spawn(move || {
-                if let Err(e) = session.run() {
-                    error!("failed to run session: {e:?}");
-                }
-            })?;
-
-        Ok(mount)
+        fuse::BackgroundSession::new(session)
     }
 }
 
