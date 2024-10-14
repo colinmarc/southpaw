@@ -77,8 +77,7 @@ pub(crate) struct DeviceClient {
     pending_read: Option<PendingRead>,
 
     /// All currently-blocking polls. The value is the fuse-provided poll handle.
-    pending_polls: Vec<u64>,
-    notifier: fuse::Notifier,
+    pending_polls: Vec<fuse::PollHandle>,
 }
 
 struct PendingRead {
@@ -133,7 +132,12 @@ impl DeviceClient {
         reply.data(out);
     }
 
-    pub(crate) fn do_poll(&mut self, ring: &Ring<InputEvent>, ph: u64, reply: fuse::ReplyPoll) {
+    pub(crate) fn do_poll(
+        &mut self,
+        ring: &Ring<InputEvent>,
+        ph: fuse::PollHandle,
+        reply: fuse::ReplyPoll,
+    ) {
         if self.ring_offset < ring.current_offset() {
             reply.poll(EPOLLIN.try_into().unwrap());
         } else {
@@ -144,7 +148,7 @@ impl DeviceClient {
 }
 
 impl DeviceState {
-    pub(crate) fn insert_client(&mut self, fh: u64, notifier: fuse::Notifier) {
+    pub(crate) fn insert_client(&mut self, fh: u64) {
         self.clients.push(DeviceClient {
             fh,
             ring_offset: self.ring.current_offset(),
@@ -152,7 +156,6 @@ impl DeviceState {
 
             pending_read: None,
             pending_polls: Vec::new(),
-            notifier,
         });
     }
 
@@ -216,7 +219,7 @@ impl DeviceState {
             }
 
             for ph in client.pending_polls.drain(..) {
-                client.notifier.poll(ph)?;
+                ph.notify()?;
             }
 
             if let Some(pending_read) = client.pending_read.take() {

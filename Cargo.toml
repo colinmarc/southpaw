@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies.fuser]
 git = "https://github.com/colinmarc/fuser"
-rev = "1e22afdb868a86afd20ce598aec6e634a9fdc603"
+rev = "574a43a1d84ff82855947f04fcfa69cb094190b0"
 default-features = false
 features = ["abi-7-11"]
 

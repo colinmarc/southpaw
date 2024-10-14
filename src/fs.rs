@@ -310,7 +310,6 @@ impl fuse::Filesystem for Fs {
 
         let nodes = self.tree.nodes.lock();
         if let Some(child) = lookup_child(&nodes, parent_idx, name) {
-            debug!("lookup ino: {}", nodes[child].attr.ino);
             return reply.entry(&time::Duration::ZERO, &nodes[child].attr, 0);
         }
 
@@ -331,7 +330,7 @@ impl fuse::Filesystem for Fs {
         reply.attr(&time::Duration::ZERO, &node.attr);
     }
 
-    fn open(&mut self, req: &fuse::Request<'_>, ino: u64, _flags: i32, reply: fuse::ReplyOpen) {
+    fn open(&mut self, _req: &fuse::Request<'_>, ino: u64, _flags: i32, reply: fuse::ReplyOpen) {
         if ino == fuse::FUSE_ROOT_ID {
             return reply.error(ENOTSUP);
         }
@@ -347,7 +346,7 @@ impl fuse::Filesystem for Fs {
         self.max_fh = self.max_fh.checked_add(1).expect("file handle overflow");
         let fh = self.max_fh;
 
-        state.lock().insert_client(fh, req.notifier());
+        state.lock().insert_client(fh);
         reply.opened(
             fh,
             fuse::consts::FOPEN_DIRECT_IO | fuse::consts::FOPEN_NONSEEKABLE,
@@ -449,7 +448,6 @@ impl fuse::Filesystem for Fs {
                 NodeType::Device { .. } => fuse::FileType::RegularFile,
             };
 
-            debug!("child ino: {child:?} / {}", child.to_bits());
             if reply.add(child.to_bits(), (off + 1) as _, filetype, &node.name) {
                 return reply.ok();
             }
@@ -532,12 +530,12 @@ impl fuse::Filesystem for Fs {
         _req: &fuse::Request<'_>,
         ino: u64,
         fh: u64,
-        ph: u64,
+        ph: fuse::PollHandle,
         _events: u32,
         _flags: u32,
         reply: fuse::ReplyPoll,
     ) {
-        debug!("poll ino: {ino}, fh: {fh}, kh: {ph}, flags: {_flags}");
+        debug!("poll ino: {ino}, fh: {fh}, kh: {ph:?}, flags: {_flags}");
 
         let Some(node) = self.tree.get_node(ino) else {
             return reply.error(ENOENT);
