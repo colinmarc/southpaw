@@ -22,4 +22,4 @@ jobs:
     - name: Clippy
       run: cargo clippy --no-deps
     - name: Run tests
-      run: cargo test -v
+      run: unshare -Urmpf --keep-caps cargo test -v
