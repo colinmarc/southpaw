@@ -2,7 +2,7 @@
 name = "southpaw"
 description = "Allows userspace emulation of evdev character devices."
 edition = "2021"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Colin Marc <hi@colinmarc.com>"]
 license = "MIT"
 
