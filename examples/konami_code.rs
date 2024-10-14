@@ -1,7 +1,7 @@
 use std::{io::Read as _, path::Path};
 
 use southpaw::sys::{ABS_HAT0X, ABS_HAT0Y, BTN_EAST, BTN_SOUTH, BTN_START, EV_ABS, EV_KEY};
-use southpaw::{AbsAxis, Device, DeviceTree, KeyCode, Scancode};
+use southpaw::{AbsAxis, AbsInfo, Device, DeviceTree, KeyCode};
 
 const CODE: [(&str, u16, i32); 11] = [
     ("UP", ABS_HAT0Y, -1),
@@ -36,14 +36,30 @@ fn main() -> std::io::Result<()> {
     let controller = Device::builder()
         .name("SNES Gamepad")
         .id(0x03, 0x0810, 0xe501, 0x01)
-        .supported_event_codes([
-            Scancode::Key(KeyCode::BtnSouth),
-            Scancode::Key(KeyCode::BtnNorth),
-            Scancode::Key(KeyCode::BtnEast),
-            Scancode::Key(KeyCode::BtnWest),
-            Scancode::AbsoluteAxis(AbsAxis::X),
-            Scancode::AbsoluteAxis(AbsAxis::Y),
+        .supported_key_codes([
+            KeyCode::BtnSouth,
+            KeyCode::BtnNorth,
+            KeyCode::BtnEast,
+            KeyCode::BtnWest,
         ])
+        .supported_absolute_axis(
+            AbsAxis::X,
+            AbsInfo {
+                value: 0,
+                minimum: -128,
+                maximum: 128,
+                ..Default::default()
+            },
+        )
+        .supported_absolute_axis(
+            AbsAxis::Y,
+            AbsInfo {
+                value: 0,
+                minimum: -128,
+                maximum: 128,
+                ..Default::default()
+            },
+        )
         .add_to_tree(&mut tree, "event1")?;
 
     println!("Press enter to begin sending the secret code...");

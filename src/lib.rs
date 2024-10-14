@@ -32,6 +32,7 @@ mod ring;
 use device::{DeviceAttr, DeviceState};
 use fs::*;
 use fuser as fuse;
+use libc::input_absinfo;
 use parking_lot::Mutex;
 
 pub use enums::*;
@@ -75,6 +76,24 @@ impl InputEvent {
             value: value.into(),
         }
     }
+}
+
+/// input_absinfo from the kernel source. Guaranteed to be ABI-compatible.
+#[repr(C)]
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct AbsInfo {
+    /// The initial (usually center) value.
+    pub value: i32,
+    /// The minimum value reported.
+    pub minimum: i32,
+    /// The maximum value reported.
+    pub maximum: i32,
+    /// Used to filter noise from the stream.
+    pub fuzz: i32,
+    /// Values less than this will be treated as 0.
+    pub flat: i32,
+    /// The resolution of values.
+    pub resolution: i32,
 }
 
 /// A FUSE filesystem representing a tree of devices. Can be safely cloned and
@@ -188,7 +207,7 @@ pub struct Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        // self.tree.remove_device(self.inode);
+        self.tree.remove_device_node(self.inode);
     }
 }
 
@@ -268,16 +287,36 @@ impl DeviceBuilder {
         self
     }
 
-    /// Advertizes supported event codes.
-    pub fn supported_event_codes(mut self, codes: impl IntoIterator<Item = Scancode>) -> Self {
+    /// Advertizes supported key or button codes.
+    pub fn supported_key_codes(mut self, codes: impl IntoIterator<Item = KeyCode>) -> Self {
         for code in codes.into_iter() {
-            self = self.supported_event_codes_raw(code.event_type(), [u16::from(code)])
+            self = self.supported_event_codes_raw(EventType::Key, [u16::from(code)])
         }
 
         self
     }
 
-    /// For the given event_type, advertizes support for the given codes. No
+    /// Advertizes supported switch codes.
+    pub fn supported_switch_codes(mut self, codes: impl IntoIterator<Item = SwitchCode>) -> Self {
+        for code in codes.into_iter() {
+            self = self.supported_event_codes_raw(EventType::Switch, [u16::from(code)])
+        }
+
+        self
+    }
+
+    /// Advertizes support for a particular absolute axis.
+    pub fn supported_absolute_axis(mut self, axis: impl Into<AbsAxis>, info: AbsInfo) -> Self {
+        let axis: u16 = axis.into().into();
+        self = self.supported_event_codes_raw(EventType::AbsoluteAxis, [axis]);
+
+        let info: input_absinfo = unsafe { std::mem::transmute(info) };
+        self.dev_attr.absinfo.insert(axis, info);
+
+        self
+    }
+
+    /// For the given event_type, advertizes support for the given button codes. No
     /// validation on the code is performed, beyond that it is less than
     /// [sys::KEY_MAX].
     pub fn supported_event_codes_raw<T, U>(
@@ -447,7 +486,7 @@ mod tests {
             resolution: 1,
         };
 
-        let ev_transmuted: libc::input_absinfo = unsafe { std::mem::transmute(ev) };
+        let ev_transmuted: input_absinfo = unsafe { std::mem::transmute(ev) };
 
         assert_eq!(ev_transmuted.value, ev.value);
         assert_eq!(ev_transmuted.minimum, ev.minimum);
@@ -562,14 +601,14 @@ mod tests {
         let _mount = tree.mount(&p);
 
         let _dev = Device::builder()
-            .supported_event_codes([
-                Scancode::Key(KeyCode::BtnSouth),
-                Scancode::Key(KeyCode::BtnNorth),
-                Scancode::Key(KeyCode::BtnEast),
-                Scancode::Key(KeyCode::BtnWest),
-                Scancode::AbsoluteAxis(AbsAxis::X),
-                Scancode::AbsoluteAxis(AbsAxis::Y),
+            .supported_key_codes([
+                KeyCode::BtnSouth,
+                KeyCode::BtnNorth,
+                KeyCode::BtnEast,
+                KeyCode::BtnWest,
             ])
+            .supported_absolute_axis(AbsAxis::X, Default::default())
+            .supported_absolute_axis(AbsAxis::Y, Default::default())
             .add_to_tree(&mut tree, "test")
             .expect("failed to create device");
 
@@ -612,5 +651,47 @@ mod tests {
                 evdev::AbsoluteAxisType::ABS_Y,
             ]
         );
+    }
+
+    #[test]
+    fn device_absinfo() {
+        let p = tmp_mount_point();
+        let mut tree = DeviceTree::new();
+        let _mount = tree.mount(&p);
+
+        let weird_absinfo = AbsInfo {
+            value: 123,
+            minimum: 0,
+            maximum: 200,
+            ..Default::default()
+        };
+
+        let _dev = Device::builder()
+            .supported_absolute_axis(AbsAxis::X, Default::default())
+            .supported_absolute_axis(AbsAxis::Y, weird_absinfo)
+            .add_to_tree(&mut tree, "test")
+            .expect("failed to create device");
+
+        let dev = evdev::Device::open(p.path().join("test")).expect("failed to open device");
+
+        let supported_axes: Vec<_> = dev
+            .supported_absolute_axes()
+            .expect("no supported axes")
+            .iter()
+            .collect();
+
+        assert_eq!(
+            supported_axes,
+            [
+                evdev::AbsoluteAxisType::ABS_X,
+                evdev::AbsoluteAxisType::ABS_Y,
+            ]
+        );
+
+        let absinfo = dev.get_abs_state().expect("failed to get abs state");
+        let absinfo_x: AbsInfo = unsafe { std::mem::transmute_copy(&absinfo[0]) };
+        let absinfo_y: AbsInfo = unsafe { std::mem::transmute_copy(&absinfo[1]) };
+        assert_eq!(AbsInfo::default(), absinfo_x);
+        assert_eq!(weird_absinfo, absinfo_y);
     }
 }

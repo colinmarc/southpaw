@@ -39,8 +39,8 @@ The following ioctls are currently implemented:
 | EVIOCGSND        |   ❌    |
 | EVIOCGSW         |   ❌    |
 | EVIOCGBIT        |   ✅    |
-| EVIOCGABS        |   ❌    |
-| EVIOCSABS        |   ❌    |
+| EVIOCGABS        |   ✅    |
+| EVIOCSABS        |   ✅    |
 | EVIOCSFF         |   ❌    |
 | EVIOCGRMFF       |   ❌    |
 | EVIOCGEFFECTS    |   ❌    |

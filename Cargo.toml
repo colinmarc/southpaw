@@ -19,6 +19,7 @@ features = ["process", "time"]
 [dependencies]
 bit-vec = "0.8"
 libc = "0.2"
+litemap = "0.7"
 log = "0.4"
 num_enum = "0.7"
 parking_lot = "0.12"

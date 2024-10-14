@@ -7,7 +7,7 @@ use std::{
 
 use bit_vec::BitVec;
 use fuser as fuse;
-use libc::{input_id, EBADF, EFAULT, EINVAL, ENOENT, ENOTSUP};
+use libc::{EBADF, EFAULT, EINVAL, ENOENT, ENOTSUP};
 use log::debug;
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use rustix::{
@@ -487,24 +487,17 @@ impl fuse::Filesystem for Fs {
             in_data.len(),
         );
 
-        let Some(node) = self.tree.get_node(ino) else {
+        let Some(mut node) = self.tree.get_node(ino) else {
             return reply.error(ENOENT);
         };
 
-        let NodeType::Device { state, dev_attr } = &node.contents else {
+        let NodeType::Device { state, dev_attr } = &mut node.contents else {
             return reply.error(EBADF);
         };
 
         match cmd {
             Cmd::GetVersion => reply.ioctl(0, &EV_VERSION.to_ne_bytes()),
-            Cmd::GetId => {
-                let mut out = vec![0_u8; size_of::<input_id>()];
-                unsafe {
-                    std::ptr::write(out.as_mut_ptr() as *mut _, dev_attr.id);
-                }
-
-                reply.ioctl(0, &out);
-            }
+            Cmd::GetId => reply_struct(reply, Some(dev_attr.id)),
             Cmd::GetName(len) => reply_str(reply, len, dev_attr.name.as_deref()),
             Cmd::GetPhys(len) => reply_str(reply, len, dev_attr.phys.as_deref()),
             Cmd::GetUniq(len) => reply_str(reply, len, dev_attr.uniq.as_deref()),
@@ -521,6 +514,12 @@ impl fuse::Filesystem for Fs {
                 EV_SW => reply_bits(reply, len, &dev_attr.support.sw_bits),
                 _ => reply.error(EINVAL),
             },
+            Cmd::SetAbsInfo(axis, info) => {
+                dev_attr.absinfo.insert(axis as u16, info);
+            }
+            Cmd::GetAbsInfo(axis) => {
+                reply_struct(reply, dev_attr.absinfo.get(&(axis as u16)).copied())
+            }
             Cmd::Grab(v) if v > 0 => reply_empty(reply, state.lock().grab(fh)),
             Cmd::Grab(v) if v <= 0 => reply_empty(reply, state.lock().ungrab(fh)),
             _ => reply.error(ENOTSUP),
@@ -572,6 +571,17 @@ fn reply_bits<B: bit_vec::BitBlock>(reply: fuse::ReplyIoctl, len: usize, bits: &
 
     let len = len.min(out.len());
     reply.ioctl(len as i32, &out[..len])
+}
+
+fn reply_struct<T: Sized>(reply: fuse::ReplyIoctl, v: Option<T>) {
+    let mut out = vec![0_u8; size_of::<T>()];
+    if let Some(value) = v {
+        unsafe {
+            std::ptr::write(out.as_mut_ptr() as *mut _, value);
+        }
+    }
+
+    reply.ioctl(0, &out);
 }
 
 fn reply_empty(reply: fuse::ReplyIoctl, res: Result<(), Errno>) {
