@@ -31,7 +31,7 @@ fn main() -> std::io::Result<()> {
     let _ = std::fs::create_dir_all(path);
 
     let mut tree = DeviceTree::new();
-    let _mount = tree.mount(path);
+    let _mount = tree.mount(path)?;
 
     let controller = Device::builder()
         .name("SNES Gamepad")

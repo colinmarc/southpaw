@@ -33,6 +33,7 @@ use device::{DeviceAttr, DeviceState};
 use fs::*;
 use fuser as fuse;
 use libc::input_absinfo;
+use log::error;
 use parking_lot::Mutex;
 
 pub use enums::*;
@@ -188,7 +189,11 @@ impl DeviceTree {
 
         std::thread::Builder::new()
             .name("southpaw".to_string())
-            .spawn(move || session.run())?;
+            .spawn(move || {
+                if let Err(e) = session.run() {
+                    error!("failed to run session: {e:?}");
+                }
+            })?;
 
         Ok(mount)
     }
@@ -523,7 +528,7 @@ mod tests {
         let p = p.path();
         let mut tree = DeviceTree::new();
 
-        let _mount = tree.mount(p);
+        let _mount = tree.mount(p).expect("failed to mount device");
 
         assert_eq!(<Vec<String>>::new(), readdir(p));
 
@@ -572,7 +577,7 @@ mod tests {
     fn device_basic_attrs() {
         let p = tmp_mount_point();
         let mut tree = DeviceTree::new();
-        let _mount = tree.mount(&p);
+        let _mount = tree.mount(&p).expect("failed to mount device");
 
         let _dev = Device::builder()
             .name("test device")
@@ -598,7 +603,7 @@ mod tests {
     fn device_supported_keys() {
         let p = tmp_mount_point();
         let mut tree = DeviceTree::new();
-        let _mount = tree.mount(&p);
+        let _mount = tree.mount(&p).expect("failed to mount device");
 
         let _dev = Device::builder()
             .supported_key_codes([
@@ -657,7 +662,7 @@ mod tests {
     fn device_absinfo() {
         let p = tmp_mount_point();
         let mut tree = DeviceTree::new();
-        let _mount = tree.mount(&p);
+        let _mount = tree.mount(&p).expect("failed to mount device");
 
         let weird_absinfo = AbsInfo {
             value: 123,
