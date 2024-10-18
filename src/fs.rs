@@ -409,6 +409,7 @@ impl fuse::Filesystem for Fs {
         }
 
         state.clients.retain(|c| c.fh != fh);
+        reply.ok()
     }
 
     fn readdir(
