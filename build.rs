@@ -1,5 +1,7 @@
 use std::{env, path::PathBuf};
 
+use anyhow::Context as _;
+
 fn main() {
     let bindings = bindgen::Builder::default()
         .header("src/bindings.h")
@@ -23,14 +25,15 @@ fn main() {
         ((6, 6), "linux66"),
     ];
 
-    let version = linux_kernel_version();
-    eprintln!("linux version: {}.{}", version.major, version.minor);
-
-    for ((major, minor), tag) in VERSION_TO_TAG {
-        let semver = semver::Version::new(*major, *minor, 0);
-        if version > semver {
-            println!("cargo::rustc-cfg={tag}");
+    if let Ok(version) = linux_kernel_version() {
+        for ((major, minor), tag) in VERSION_TO_TAG {
+            let semver = semver::Version::new(*major, *minor, 0);
+            if version > semver {
+                println!("cargo::rustc-cfg={tag}");
+            }
         }
+    } else {
+        println!("cargo::warning=unable to determine linux kernel version!");
     }
 }
 
@@ -43,11 +46,13 @@ impl bindgen::callbacks::ParseCallbacks for IntKindCallbacks {
     }
 }
 
-fn linux_kernel_version() -> semver::Version {
+fn linux_kernel_version() -> anyhow::Result<semver::Version> {
     let uname = rustix::system::uname();
-    let version = uname.release().to_str().expect("invalid version");
-    eprintln!("version: {version}");
-    let version = version.split_whitespace().next().expect("invalid version");
+    let version = uname.release().to_str().context("invalid version")?;
+    let version = version
+        .split_whitespace()
+        .next()
+        .context("invalid version")?;
 
-    semver::Version::parse(version).expect("invalid semver")
+    semver::Version::parse(version).context("invalid semver")
 }
