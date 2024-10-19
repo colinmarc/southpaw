@@ -173,7 +173,7 @@ impl DeviceTree {
                     ctime: t,
                     crtime: t,
                     kind: fuse::FileType::RegularFile,
-                    perm: 0o1755,
+                    perm: 0o755,
                     nlink: 1,
                     uid: self.uid,
                     gid: self.gid,
