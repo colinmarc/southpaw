@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf};
 
-use anyhow::Context as _;
+use anyhow::bail;
+use regex::Regex;
 
 fn main() {
     let bindings = bindgen::Builder::default()
@@ -25,15 +26,21 @@ fn main() {
         ((6, 6), "linux66"),
     ];
 
-    if let Ok(version) = linux_kernel_version() {
-        for ((major, minor), tag) in VERSION_TO_TAG {
-            let semver = semver::Version::new(*major, *minor, 0);
-            if version > semver {
-                println!("cargo::rustc-cfg={tag}");
+    match linux_kernel_version() {
+        Ok(v) => {
+            for ((major, minor), tag) in VERSION_TO_TAG {
+                let semver = semver::Version::new(*major, *minor, 0);
+                if v > semver {
+                    println!("cargo::rustc-cfg={tag}");
+                }
             }
         }
-    } else {
-        println!("cargo::warning=unable to determine linux kernel version!");
+        Err(e) => {
+            println!(
+                "cargo::warning=unable to determine linux kernel version: {:#}",
+                e
+            );
+        }
     }
 }
 
@@ -48,11 +55,19 @@ impl bindgen::callbacks::ParseCallbacks for IntKindCallbacks {
 
 fn linux_kernel_version() -> anyhow::Result<semver::Version> {
     let uname = rustix::system::uname();
-    let version = uname.release().to_str().context("invalid version")?;
-    let version = version
-        .split_whitespace()
-        .next()
-        .context("invalid version")?;
+    let Ok(version) = uname.release().to_str() else {
+        bail!("invalid uname release");
+    };
 
-    semver::Version::parse(version).context("invalid semver")
+    // \A here matches only the start of the string - so we're not actually
+    // searching.
+    let re = Regex::new(r"\A\d+\.\d+\.\d+").unwrap();
+    let Some(version) = re
+        .find(version)
+        .and_then(|m| semver::Version::parse(m.as_str()).ok())
+    else {
+        bail!(format!("invalid linux release: {version}"));
+    };
+
+    Ok(version)
 }
